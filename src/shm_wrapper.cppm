@@ -1,132 +1,128 @@
-#include <iostream>
 #include <cstdint>
-#include <cstddef>
 #include <cstring>
+#include <vector>
+#include <stdexcept>
 #include <sys/shm.h>
 #include <sys/ipc.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <pthread.h>
+#include <memory>
 
-// Include your client and cxlmalloc headers
-#include "client.h" 
+#include "client.h"
 #include "cxlmalloc.h"
 
-// Abstract class for Shared Memory handling
+// Abstract class
 class ShmWrapper {
-public:
+ public:
     virtual ~ShmWrapper() = default;
 
-    // Method to allocate/get shared memory
     virtual void* get(size_t size) = 0;
-
-    // Method to deallocate/release shared memory
+    virtual void put(uint64_t object_id, const void* data, size_t size) = 0;
     virtual void release(void* ptr) = 0;
 };
 
-// Implementation using LightningClient
 class LightningShmWrapper : public ShmWrapper {
     LightningClient client;
-    // Additional necessary members and methods
+    std::vector<uint64_t> allocatedObjects;
 
-public:
-    LightningShmWrapper(const std::string& path, const std::string& password) : client(path, password) {
-        // Additional initialization if necessary
+ public:
+    LightningShmWrapper(const std::string& store_socket, const std::string& password)
+            : client(store_socket, password) {}
+
+    ~LightningShmWrapper() override {
+        // for (auto objId : allocatedObjects) { client.Release(objId); }
     }
 
+    LightningShmWrapper(const LightningShmWrapper&) = default;
+    LightningShmWrapper& operator=(const LightningShmWrapper&) = default;
+    LightningShmWrapper(LightningShmWrapper&&) = default;
+    LightningShmWrapper& operator=(LightningShmWrapper&&) = default;
+
     void* get(size_t size) override {
-        // Implementation using LightningClient
-        uint8_t *ptr;
-        int status = client.Create(0, &ptr, size);  // Example implementation
+        uint8_t* ptr = nullptr;
+        uint64_t objectId = generateUniqueId();
+        if (client.Create(objectId, &ptr, size) != 0) {
+            throw std::runtime_error("LightningClient Create failed");
+        }
+        allocatedObjects.push_back(objectId);
         return ptr;
     }
 
-    void release(void* ptr) override {
-        // Implementation for releasing memory
-        // This will depend on how LightningClient handles memory release
+    void put(uint64_t object_id, const void* data, size_t size) override {
+        client.MultiPut(object_id, {/* fields */}, {static_cast<int64_t>(size)},
+                                        {static_cast<uint8_t*>(const_cast<void*>(data))});
+    }
+
+    //   void release(void* ptr) override {
+    //     uint64_t objectId = findObjectId(ptr);
+    //     client.Release(objectId);
+    //   }
+
+ private:
+    uint64_t generateUniqueId() {
+        static uint64_t id = 0;
+        return ++id;
     }
 };
 
-// Implementation using POSIX shared memory API
-class PosixShmWrapper : public ShmWrapper {
-    int shm_id;
-
-public:
-    PosixShmWrapper(int key, size_t size) {
-        shm_id = shmget(key, size, IPC_CREAT | 0664);
-        if (shm_id == -1) {
-            // Handle error
-            perror("shmget failed");
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    void* get(size_t size) override {
-        void* ptr = shmat(shm_id, NULL, 0);
-        if (ptr == (void*)-1) {
-            // Handle error
-            perror("shmat failed");
-            exit(EXIT_FAILURE);
-        }
-        return ptr;
-    }
-
-    void release(void* ptr) override {
-        if (shmdt(ptr) == -1) {
-            // Handle error
-            perror("shmdt failed");
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    ~PosixShmWrapper() {
-        shmctl(shm_id, IPC_RMID, NULL); // Clean up shared memory
-    }
-};
-
-// Implementation using cxl_shm
 class CxlShmWrapper : public ShmWrapper {
-    cxl_shm* shm;
+    std::unique_ptr<cxl_shm> shm;
     size_t length;
     int shm_id;
 
-public:
-    CxlShmWrapper(size_t length, int shm_id) : length(length), shm_id(shm_id) {
-        shm = new cxl_shm(length, shm_id);
-        // Additional initialization if required
-    }
-
-    ~CxlShmWrapper() {
-        delete shm;
+ public:
+    CxlShmWrapper(size_t length, int shm_id)
+            : shm(std::make_unique<cxl_shm>(length, shm_id)), length(length), shm_id(shm_id) {
+        shm->thread_init();
     }
 
     void* get(size_t size) override {
-        // Implementation using cxl_shm
-        return shm->cxl_malloc(size, 0); // Adjust parameters as necessary
+        CXLRef ref = shm->cxl_malloc(size, 0);
+        return ref.get_addr();
+    }
+
+    void put(uint64_t object_id, const void* data, size_t size) override {
+        CXLRef ref = shm->get_ref(object_id);
+        std::memcpy(ref.get_addr(), data, size);
     }
 
     void release(void* ptr) override {
-        // Implementation for releasing memory
-        shm->cxl_free(ptr); // Adjust this line according to the actual API
+        cxl_block* block = static_cast<cxl_block*>(ptr);
+        shm->cxl_free(false, block);
     }
 };
 
-// Main application for demonstration
-int main() {
-    ShmWrapper* shmWrapper;
+class PosixShmWrapper : public ShmWrapper {
+    int shm_id;
 
-    // Initialize the appropriate wrapper based on your needs
-    // shmWrapper = new LightningShmWrapper("/tmp/lightning", "password");
-    // OR
-    // shmWrapper = new PosixShmWrapper(100, 1024);
-    // OR
-    // shmWrapper = new CxlShmWrapper(1024, 100);
+ public:
+    PosixShmWrapper(int key, size_t size) : shm_id(shmget(key, size, IPC_CREAT | 0664)) {
+        if (shm_id == -1) { throw std::runtime_error("shmget failed"); }
+    }
 
-    void* sharedMemory = shmWrapper->get(1024);
-    // Use shared memory here
+    ~PosixShmWrapper() override { shmctl(shm_id, IPC_RMID, nullptr); }
 
-    shmWrapper->release(sharedMemory);
+    PosixShmWrapper(const PosixShmWrapper&) = default;
+    PosixShmWrapper& operator=(const PosixShmWrapper&) = default;
+    PosixShmWrapper(PosixShmWrapper&&) = default;
+    PosixShmWrapper& operator=(PosixShmWrapper&&) = default;
 
-    delete shmWrapper;
-    return 0;
-}
+    void* get(size_t size) override {
+        void* ptr = shmat(shm_id, nullptr, 0);
+        if (ptr == reinterpret_cast<void*>(-1)) { throw std::runtime_error("shmat failed"); }
+        return ptr;
+    }
+
+    void put(uint64_t, const void* data, size_t size) override {
+        void* ptr = shmat(shm_id, nullptr, 0);
+        if (ptr == reinterpret_cast<void*>(-1)) { throw std::runtime_error("shmat failed"); }
+        std::memcpy(ptr, data, size);
+        if (shmdt(ptr) == -1) { throw std::runtime_error("shmdt failed"); }
+    }
+
+    void release(void* ptr) override {
+        if (shmdt(ptr) == -1) { throw std::runtime_error("shmdt failed"); }
+    }
+};
+
+
