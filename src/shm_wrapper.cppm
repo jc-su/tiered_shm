@@ -1,3 +1,4 @@
+module;
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -8,8 +9,11 @@
 #include <unistd.h>
 #include <memory>
 
-#include "client.h"
-#include "cxlmalloc.h"
+#include "client.h" // DRAM
+#include "cxlmalloc.h" // CXL
+
+export module shm_wrapper;
+import utils;
 
 // Abstract class
 class ShmWrapper {
@@ -31,6 +35,7 @@ class LightningShmWrapper : public ShmWrapper {
 
     ~LightningShmWrapper() override {
         // for (auto objId : allocatedObjects) { client.Release(objId); }
+        utils::WatermarkManager::getInstance().setHighWatermark(false);
     }
 
     LightningShmWrapper(const LightningShmWrapper&) = default;
