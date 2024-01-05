@@ -64,17 +64,6 @@ export class MemoryMonitor {
   double lowWatermarkThreshold = 60.0;
   double highWatermarkThreshold = 80.0;
 
-  struct mmap_monitor_bpf* skel = mmap_monitor_bpf__open_and_load();
-  if (!skel) {
-    std::cerr << "Failed to open and load BPF program\n";
-    return;
-  }
-
-  if (mmap_monitor_bpf__attach(skel)) {
-    std::cerr << "Failed to attach BPF program\n";
-    return;
-  }
-
   static double checkDRAMUsage() {
     struct sysinfo memInfo {};
     sysinfo(&memInfo);
@@ -109,21 +98,31 @@ export class MemoryMonitor {
   }
 
   // Event-driven approach to set the watermark
-  void handle_ebpf_event(void* ctx, int cpu, void* data, uint32_t size) {
+  static void handle_ebpf_event(void* ctx, int cpu, void* data, uint32_t size) {
     auto& watermarkManager = WatermarkManager::getInstance();
     double usage = checkDRAMUsage();
 
-    // TODO
-    if (usage > highWatermarkThreshold) {
-      watermarkManager.setHighWatermark();
-    } else if (usage < lowWatermarkThreshold) {
-      watermarkManager.setLowWatermark();
-    }
+    // // TODO
+    // if (usage > highWatermarkThreshold) {
+    //   watermarkManager.setHighWatermark();
+    // } else if (usage < lowWatermarkThreshold) {
+    //   watermarkManager.setLowWatermark();
+    // }
   }
 
   void listenForEbpfEvents() {
+    struct mmap_monitor_bpf* skel = mmap_monitor_bpf__open_and_load();
+    if (!skel) {
+      std::cerr << "Failed to open and load BPF program\n";
+      return;
+    }
+
+    if (mmap_monitor_bpf__attach(skel)) {
+      std::cerr << "Failed to attach BPF program\n";
+      return;
+    }
     struct perf_buffer* pb = nullptr;
-    struct perf_buffer_opts pb_opts{};
+    struct perf_buffer_opts pb_opts {};
     pb_opts.sample_cb = handle_ebpf_event;
 
     pb = perf_buffer__new(bpf_map__fd(skel->maps.events), 64, &pb_opts);
@@ -148,9 +147,9 @@ export class MemoryMonitor {
   MemoryMonitor& operator=(MemoryMonitor&&) = delete;
 
   void start(int interval) {
-    worker = std::thread(&MemoryMonitor::periodicCheck, this, interval);
-    // ebpfEventThread = std::thread(&MemoryMonitor::listenForEbpfEvents, this);
-    // ebpfEventDone = false;
+    // worker = std::thread(&MemoryMonitor::periodicCheck, this, interval);
+    ebpfEventThread = std::thread(&MemoryMonitor::listenForEbpfEvents, this);
+    ebpfEventDone = false;
   }
 
   void stop() {

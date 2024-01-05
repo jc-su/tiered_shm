@@ -1,12 +1,12 @@
 add_custom_command(
     OUTPUT mmap_monitor.bpf.o
-    COMMAND clang -O2 -target bpf -c ${CMAKE_CURRENT_SOURCE_DIR}/mmap_monitor.bpf.c -o mmap_monitor.bpf.o
+    COMMAND cc -O2 -target bpf -c ${CMAKE_CURRENT_SOURCE_DIR}/mmap_monitor.bpf.c -o ${CMAKE_CURRENT_SOURCE_DIR}/mmap_monitor.bpf.o
     DEPENDS mmap_monitor.bpf.c
 )
 
 add_custom_command(
     OUTPUT mmap_monitor.skel.h
-    COMMAND bpftool gen skeleton mmap_monitor.bpf.o > mmap_monitor.skel.h
+    COMMAND bpftool gen skeleton ${CMAKE_CURRENT_SOURCE_DIR}/mmap_monitor.bpf.o > ${CMAKE_CURRENT_SOURCE_DIR}/mmap_monitor.skel.h
     DEPENDS mmap_monitor.bpf.o
 )
 
