@@ -13,6 +13,11 @@ module;
 
 export module utils;
 
+namespace CONFIG {
+inline constexpr double HIGH_WATERMARK_THRESHOLD = 80;
+inline constexpr double LOW_WATERMARK_THRESHOLD = 60;
+}  // namespace CONFIG
+
 export enum class WtermarkType { LOW, HIGH };
 
 export class WatermarkManager {
@@ -61,9 +66,6 @@ export class MemoryMonitor {
   std::thread ebpfEventThread;
   std::atomic<bool> ebpfEventDone;
 
-  double lowWatermarkThreshold = 60.0;
-  double highWatermarkThreshold = 80.0;
-
   static double checkDRAMUsage() {
     struct sysinfo memInfo {};
     sysinfo(&memInfo);
@@ -86,12 +88,12 @@ export class MemoryMonitor {
     while (!this->done) {
       usage = checkDRAMUsage();
       // 80% of DRAM usage is considered as high watermark
-      if (usage > highWatermarkThreshold) { watermarkManager.setHighWatermark(); }
+      if (usage > CONFIG::HIGH_WATERMARK_THRESHOLD) { watermarkManager.setHighWatermark(); }
 
       // TODO Perform memory demotion immediately
 
       // 60% of DRAM usage is considered as low watermark
-      if (usage < lowWatermarkThreshold) { watermarkManager.setLowWatermark(); }
+      if (usage < CONFIG::LOW_WATERMARK_THRESHOLD) { watermarkManager.setLowWatermark(); }
 
       this->cv.wait_for(lock, std::chrono::seconds(interval), [this] { return this->done.load(); });
     }
@@ -103,11 +105,11 @@ export class MemoryMonitor {
     double usage = checkDRAMUsage();
 
     // // TODO
-    // if (usage > highWatermarkThreshold) {
-    //   watermarkManager.setHighWatermark();
-    // } else if (usage < lowWatermarkThreshold) {
-    //   watermarkManager.setLowWatermark();
-    // }
+    if (usage > CONFIG::HIGH_WATERMARK_THRESHOLD) {
+      watermarkManager.setHighWatermark();
+    } else if (usage < CONFIG::LOW_WATERMARK_THRESHOLD) {
+      watermarkManager.setLowWatermark();
+    }
   }
 
   void listenForEbpfEvents() {
@@ -139,7 +141,7 @@ export class MemoryMonitor {
   }
 
  public:
-  MemoryMonitor() : done(false) {}
+  MemoryMonitor() : done(false), ebpfEventDone(false) {}
 
   MemoryMonitor(const MemoryMonitor&) = delete;
   MemoryMonitor& operator=(const MemoryMonitor&) = delete;
@@ -147,9 +149,8 @@ export class MemoryMonitor {
   MemoryMonitor& operator=(MemoryMonitor&&) = delete;
 
   void start(int interval) {
-    // worker = std::thread(&MemoryMonitor::periodicCheck, this, interval);
+    worker = std::thread(&MemoryMonitor::periodicCheck, this, interval);
     ebpfEventThread = std::thread(&MemoryMonitor::listenForEbpfEvents, this);
-    ebpfEventDone = false;
   }
 
   void stop() {

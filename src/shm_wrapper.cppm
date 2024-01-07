@@ -9,8 +9,12 @@ module;
 #include <unistd.h>
 #include <memory>
 
-#include "client.h" // DRAM
-#include "cxlmalloc.h" // CXL
+#include "client.h" // DRAM(lightning)
+#include "cxlmalloc.h" // CXL(CXM-SHM)
+
+// shmat(put)
+// shmget(get)
+// shmdt(release)
 
 export module shm_wrapper;
 import utils;

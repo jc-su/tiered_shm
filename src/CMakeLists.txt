@@ -1,16 +1,37 @@
+set(EBPF_OBJECT ${CMAKE_CURRENT_BINARY_DIR}/mmap_monitor.bpf.o)
+set(EBPF_SKELETON ${CMAKE_CURRENT_BINARY_DIR}/mmap_monitor.skel.h)
+set(VMLINUX_HEADER ${CMAKE_CURRENT_BINARY_DIR}/vmlinux.h)
+
+# Generate vmlinux.h
 add_custom_command(
-    OUTPUT mmap_monitor.bpf.o
-    COMMAND cc -O2 -target bpf -c ${CMAKE_CURRENT_SOURCE_DIR}/mmap_monitor.bpf.c -o ${CMAKE_CURRENT_SOURCE_DIR}/mmap_monitor.bpf.o
-    DEPENDS mmap_monitor.bpf.c
+    OUTPUT ${VMLINUX_HEADER}
+    COMMAND echo "Generating vmlinux.h"
+    COMMAND bpftool btf dump file /sys/kernel/btf/vmlinux format c > ${VMLINUX_HEADER}
+    COMMAND echo "vmlinux.h is generated at ${CMAKE_CURRENT_BINARY_DIR}"
 )
 
+# Compile eBPF program
 add_custom_command(
-    OUTPUT mmap_monitor.skel.h
-    COMMAND bpftool gen skeleton ${CMAKE_CURRENT_SOURCE_DIR}/mmap_monitor.bpf.o > ${CMAKE_CURRENT_SOURCE_DIR}/mmap_monitor.skel.h
-    DEPENDS mmap_monitor.bpf.o
+    OUTPUT ${EBPF_OBJECT}
+    COMMAND echo "Compiling mmap_monitor.bpf.c"
+    COMMAND cc -O2 -target bpf -I${CMAKE_CURRENT_BINARY_DIR} -c ${CMAKE_SOURCE_DIR}/src/mmap_monitor.bpf.c -o ${EBPF_OBJECT}
+    COMMAND echo "mmap_monitor.bpf.o is generated at ${CMAKE_CURRENT_BINARY_DIR}"
+    DEPENDS ${CMAKE_SOURCE_DIR}/src/mmap_monitor.bpf.c ${VMLINUX_HEADER}
 )
 
-add_library(utils)
+# Generate BPF skeleton
+add_custom_command(
+    OUTPUT ${EBPF_SKELETON}
+    COMMAND echo "Generating mmap_monitor.skel.h from mmap_monitor.bpf.o"
+    COMMAND bpftool gen skeleton ${EBPF_OBJECT} > ${EBPF_SKELETON}
+    COMMAND echo "mmap_monitor.skel.h is generated at ${CMAKE_CURRENT_BINARY_DIR}"
+    DEPENDS ${EBPF_OBJECT}
+)
+
+# Custom target that depends on the eBPF object and skeleton
+add_custom_target(mmap_monitor ALL DEPENDS ${EBPF_OBJECT} ${EBPF_SKELETON} ${VMLINUX_HEADER})
+
+add_library(utils STATIC)
 # add_library(shm_wrapper)
 
 target_sources(utils
@@ -19,7 +40,9 @@ target_sources(utils
         utils.cppm
 )
 
-target_link_directories(
+target_include_directories(utils PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+target_link_libraries(
         utils
         PRIVATE
         bpf

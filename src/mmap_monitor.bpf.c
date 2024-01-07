@@ -1,4 +1,4 @@
-#include <linux/bpf.h>
+#include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 
 struct bpf_map_def SEC("maps") events = {
@@ -9,11 +9,9 @@ struct bpf_map_def SEC("maps") events = {
 };
 
 SEC("tracepoint/syscalls/sys_enter_mmap")
-int mmap_monitor(struct trace_event_raw_sys_enter *ctx) {
-    // handle mmap syscall event
-    // For example, you might want to send an event to user-space:
+int mmap_monitor(void *ctx) {
     int key = 0;
-    long value = 1; // Placeholder value
+    long value = 1;
     bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &value, sizeof(value));
     return 0;
 }
