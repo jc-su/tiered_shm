@@ -8,28 +8,25 @@ module;
 #include <sys/types.h>
 #include <unistd.h>
 #include <memory>
+#include <tuple>
 
 #include "client.h" // DRAM(lightning)
 #include "cxlmalloc.h" // CXL(CXM-SHM)
-
-// shmat(put)
-// shmget(get)
-// shmdt(release)
 
 export module shm_wrapper;
 import utils;
 
 // Abstract class
-class ShmWrapper {
+export class ShmWrapper {
  public:
     virtual ~ShmWrapper() = default;
 
-    virtual void* get(size_t size) = 0;
+    virtual std::tuple<void*, size_t> get(uint64_t key) = 0;
     virtual void put(uint64_t object_id, const void* data, size_t size) = 0;
     virtual void release(void* ptr) = 0;
 };
 
-class LightningShmWrapper : public ShmWrapper {
+export class LightningShmWrapper : public ShmWrapper {
     LightningClient client;
     std::vector<uint64_t> allocatedObjects;
 
@@ -38,7 +35,9 @@ class LightningShmWrapper : public ShmWrapper {
             : client(store_socket, password) {}
 
     ~LightningShmWrapper() override {
-        // for (auto objId : allocatedObjects) { client.Release(objId); }
+        for (auto objId : allocatedObjects) {
+            client.Delete(objId);
+        }
         utils::WatermarkManager::getInstance().setHighWatermark(false);
     }
 
@@ -47,34 +46,48 @@ class LightningShmWrapper : public ShmWrapper {
     LightningShmWrapper(LightningShmWrapper&&) = default;
     LightningShmWrapper& operator=(LightningShmWrapper&&) = default;
 
-    void* get(size_t size) override {
+    std::tuple<void*, size_t> get(uint64_t key) override {
         uint8_t* ptr = nullptr;
-        uint64_t objectId = generateUniqueId();
-        if (client.Create(objectId, &ptr, size) != 0) {
-            throw std::runtime_error("LightningClient Create failed");
+        size_t size;
+        if (client.Get(key, &ptr, &size) != 0) {
+            throw std::runtime_error("LightningClient Get failed");
         }
-        allocatedObjects.push_back(objectId);
-        return ptr;
+        return std::make_tuple(ptr, size);
     }
 
     void put(uint64_t object_id, const void* data, size_t size) override {
-        client.MultiPut(object_id, {/* fields */}, {static_cast<int64_t>(size)},
-                                        {static_cast<uint8_t*>(const_cast<void*>(data))});
+        uint8_t *ptr;
+        int status = client.Create(object_id, &ptr, size);
+        if (status != 0) {
+            throw std::runtime_error("LightningClient Create failed");
+        }
+        std::memcpy(ptr, data, size);
+        status = client.Seal(object_id);
+        if (status != 0) {
+            throw std::runtime_error("LightningClient Seal failed");
+        }
+        allocatedObjects.push_back(object_id);
     }
 
-    //   void release(void* ptr) override {
-    //     uint64_t objectId = findObjectId(ptr);
-    //     client.Release(objectId);
-    //   }
+    void release(void* ptr) override {
+        uint64_t objectId = findObjectId(ptr);
+        client.Delete(objectId);
+    }
 
  private:
-    uint64_t generateUniqueId() {
-        static uint64_t id = 0;
-        return ++id;
+    uint64_t findObjectId(void* ptr) {
+        for (auto objId : allocatedObjects) {
+            uint8_t* objPtr = nullptr;
+            size_t size;
+            if (client.Get(objId, &objPtr, &size) == 0 && objPtr == ptr) {
+                return objId;
+            }
+        }
+        throw std::runtime_error("Object ID not found for given pointer");
     }
 };
 
-class CxlShmWrapper : public ShmWrapper {
+export class CxlShmWrapper : public ShmWrapper {
     std::unique_ptr<cxl_shm> shm;
     size_t length;
     int shm_id;
@@ -85,9 +98,9 @@ class CxlShmWrapper : public ShmWrapper {
         shm->thread_init();
     }
 
-    void* get(size_t size) override {
-        CXLRef ref = shm->cxl_malloc(size, 0);
-        return ref.get_addr();
+    std::tuple<void*, size_t> get(uint64_t key) override {
+        CXLRef ref = shm->get_ref(key);
+        return std::make_tuple(ref.get_addr(), ref.get_size());
     }
 
     void put(uint64_t object_id, const void* data, size_t size) override {
@@ -100,38 +113,3 @@ class CxlShmWrapper : public ShmWrapper {
         shm->cxl_free(false, block);
     }
 };
-
-class PosixShmWrapper : public ShmWrapper {
-    int shm_id;
-
- public:
-    PosixShmWrapper(int key, size_t size) : shm_id(shmget(key, size, IPC_CREAT | 0664)) {
-        if (shm_id == -1) { throw std::runtime_error("shmget failed"); }
-    }
-
-    ~PosixShmWrapper() override { shmctl(shm_id, IPC_RMID, nullptr); }
-
-    PosixShmWrapper(const PosixShmWrapper&) = default;
-    PosixShmWrapper& operator=(const PosixShmWrapper&) = default;
-    PosixShmWrapper(PosixShmWrapper&&) = default;
-    PosixShmWrapper& operator=(PosixShmWrapper&&) = default;
-
-    void* get(size_t size) override {
-        void* ptr = shmat(shm_id, nullptr, 0);
-        if (ptr == reinterpret_cast<void*>(-1)) { throw std::runtime_error("shmat failed"); }
-        return ptr;
-    }
-
-    void put(uint64_t, const void* data, size_t size) override {
-        void* ptr = shmat(shm_id, nullptr, 0);
-        if (ptr == reinterpret_cast<void*>(-1)) { throw std::runtime_error("shmat failed"); }
-        std::memcpy(ptr, data, size);
-        if (shmdt(ptr) == -1) { throw std::runtime_error("shmdt failed"); }
-    }
-
-    void release(void* ptr) override {
-        if (shmdt(ptr) == -1) { throw std::runtime_error("shmdt failed"); }
-    }
-};
-
-
